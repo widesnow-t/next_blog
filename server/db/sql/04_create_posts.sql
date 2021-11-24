@@ -26,4 +26,4 @@ ON DELETEやON UPDATEは省略可能です｡キーの名前は他とかぶら�
 CONSTRAIN キーの名前
     FOREIGN KEY 外部キーとなるカラム名
     REFERENCES 参照先テーブル 参照先テーブルのカラム
-    ON DELETE オプション ON UPDATE オプション
+    ON DELETE オプション ON UPDATE オプション*/ 
