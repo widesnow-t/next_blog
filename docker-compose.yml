@@ -43,7 +43,7 @@ services:
   db:
     # Dockerfileの場所を指定
     build: docker/db/
-    image: camp/db-blog:db-blog
+    image: camp/db:1
     # build後も使用出来る環境変数としてパスワードを設定(${}を使って.envの環境変数を指定)
     environment:
     #env_file: .env
