@@ -145,7 +145,7 @@ function get_post_data()
     return $post_data;
 }
 
-function get_current_user()
+function get_login_user()
 {
     if (is_array($_SESSION['current_user'])) {
         return $_SESSION['current_user'];

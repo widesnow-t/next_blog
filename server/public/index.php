@@ -8,7 +8,7 @@ session_start();
 
 $alert = get_alert();
 $notice = get_notice();
-$current_user = get_current_user();
+$current_user = get_login_user();
 
 $categories = Category::findAll();
 

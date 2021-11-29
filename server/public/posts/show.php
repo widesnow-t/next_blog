@@ -1,13 +1,26 @@
 <?php
+require_once __DIR__ . '/../../common/config.php';
+require_once __DIR__ . '/../../common/functions.php';
 require_once __DIR__ . '/../../models/Post.php';
+
+session_start();
+
+$token = generate_token();
+$alert = get_alert();
+$notice = get_notice();
+$current_user = get_login_user();
 
 $id = filter_input(INPUT_GET, 'id');
 $post = Post::findWithUser($id);
 
+if (empty($post)) {
+    redirect_alert(
+        '/',
+        MSG_POST_DOES_NOT_EXIST
+    );
+}
+
 $comments = $post->findCommentsWithUser();
-//var_dump($comments);
-//この方法でもよいが､今回は違う方法で実装します
-//$user = User::find($post->getId());
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -18,6 +31,9 @@ $comments = $post->findCommentsWithUser();
     <?php include_once __DIR__ . '/../common/_header.php' ?>
 
     <div class="wrapper">
+        <?php include_once __DIR__ . '/../common/_notice.php' ?>
+        <?php include_once __DIR__ . '/../common/_alert.php' ?>
+
         <article class="post-detail">
             <h2 class="post-title"><?= h($post->getTitle()) ?></h2>
             <div class="post-user-area">
@@ -32,8 +48,10 @@ $comments = $post->findCommentsWithUser();
             </div>
             <p class="post-body"><?= nl2br(h($post->getBody())) ?></p>
             <div class="post-btn-edit-area">
-                <a href="edit.php" class="btn btn-edit">編集</a>
+                <a href="edit.php?id=<?= $post->getId() ?>" class="btn btn-edit">編集</a>
                 <form action="delete.php" method="post">
+                    <input type="hidden" name="token" value="<?= h($token) ?>">
+                    <input type="hidden" name="id" value="<?= h($post->getId()) ?>">
                     <input type="submit" value="削除" class="btn btn-delete" onClick="return confirm('ブログを削除しますか？')">
                 </form>
             </div>
@@ -43,36 +61,43 @@ $comments = $post->findCommentsWithUser();
                 <h3 class="comment-count">
                     コメント(<?= h($post->getCommentsCount()) ?>)
                 </h3>
-                <a href="/comments/new.php" class="btn-comment-new">コメントする</a>
+                <?php if ($current_user['id']) : ?>
+                    <a href="/comments/new.php?post_id=<?= h($post->getId()) ?>" class="btn-comment-new">コメントする</a>
+                <?php endif; ?>
             </div>
-            <?php if ($comments): ?>
-            <hr class="comment-hr">
-            <ul class="comment-list">
-                <?php foreach ($comments as $i => $c): ?>
-                <li class="comment-list-item">
-                    <div class="comment-no"><?= ++$i ?></div>
-                    <div class="comment-detail">
-                        <p class="comment-body"><?= nl2br(h($c->getComment())) ?></p>
-                        <div class="comment-user-area">
-                            <div class="comment-user">
-                                <img src="<?= h($c->getUser()->getAvatarPath()) ?>" alt="">
-                                <h4 class="comment-user-name"><?= h($c->getUser()->getName()) ?></h4>
+            <?php if ($comments) : ?>
+                <hr class="comment-hr">
+                <ul class="comment-list">
+                    <?php foreach ($comments as $i => $c) : ?>
+                        <li class="comment-list-item">
+                            <div class="comment-no"><?= ++$i ?></div>
+                            <div class="comment-detail">
+                                <p class="comment-body"><?= nl2br(h($c->getComment())) ?></p>
+                                <div class="comment-user-area">
+                                    <div class="comment-user">
+                                        <img src="<?= h($c->getUser()->getAvatarPath()) ?>" alt="">
+                                        <h4 class="comment-user-name"><?= h($c->getUser()->getName()) ?></h4>
+                                    </div>
+                                    <p class="comment-date"><?= h($c->getCreatedAt()) ?></p>
+                                    <?php if ($c->getUserId() == $current_user['id']) : ?>
+                                        <div class="comment-btn-area">
+                                            <a href="/comments/edit.php?id=<?= $c->getId() ?>" class="comment-edit">編集</a>
+                                            <form action="/comments/delete.php" method="post">
+                                                <input type="hidden" name="token" value="<?= h($token) ?>">
+                                                <input type="hidden" name="id" value="<?= h($c->getId()) ?>">
+                                                <input type="submit" value="削除" class="comment-delete" onClick="return confirm('ブログのコメントを削除しますか？')">
+                                            </form>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
                             </div>
-                            <p class="comment-date"><?= h($c->getCreatedAt()) ?></p>
-                            <div class="comment-btn-area">
-                                <a href="/comments/edit.php" class="comment-edit">編集</a>
-                                <form action="/comments/delete.php" method="post">
-                                    <input type="submit" value="削除" class="comment-delete" onClick="return confirm('ブログのコメントを削除しますか？')">
-                                </form>
-                            </div>
-                        </div>
-                    </div>
-                </li>
-                <?php endforeach; ?>
-            </ul>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
             <?php endif; ?>
         </div>
     </div>
+
     <?php include_once __DIR__ . '/../common/_footer.php' ?>
 </body>
 

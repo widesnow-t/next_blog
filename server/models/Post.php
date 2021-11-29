@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../common/config.php';
 require_once __DIR__ . '/../common/functions.php';
 require_once __DIR__ . '/User.php';
 require_once __DIR__ . '/Comment.php';
@@ -6,8 +7,10 @@ require_once __DIR__ . '/Comment.php';
 class Post
 {
     public const PER_PAGE = 8;
+    private const IMAGE_DIR_PATH = '/var/www/public/images/posts/';
     private const IMAGE_ROOT_PATH = '/images/posts/';
     private const NO_IMAGE = 'no_image.png';
+    private const EXTENTION = ['jpg', 'jpeg', 'png', 'gif'];
 
     private $id;
     private $category_id;
@@ -15,6 +18,8 @@ class Post
     private $title;
     private $body;
     private $image;
+    private $image_tmp;
+    private $image_old;
     private $comments_count;
     private $created_at;
     private $updated_at;
@@ -29,16 +34,18 @@ class Post
         $this->title = $params['title'];
         $this->body = $params['body'];
         $this->image = $params['image'];
+        $this->image_tmp = $params['image_tmp'];
+        $this->image_old = $params['image_old'];
         $this->comments_count = $params['comments_count'];
         $this->created_at = $params['created_at'];
         $this->updated_at = $params['updated_at'];
     }
 
     public function getId()
-        {
-            return $this->id;
-        }
-    
+    {
+        return $this->id;
+    }
+
     public function getTitle()
     {
         return $this->title;
@@ -49,6 +56,11 @@ class Post
         return $this->body;
     }
 
+    public function getImage()
+    {
+        return $this->image;
+    }
+
     public function getImagePath()
     {
         if (empty($this->image)) {
@@ -57,6 +69,16 @@ class Post
         } else {
             return self::IMAGE_ROOT_PATH . $this->image;
         }
+    }
+
+    public function getCategoryId()
+    {
+        return $this->category_id;
+    }
+
+    public function getUserId()
+    {
+        return $this->user_id;
     }
 
     public function getCommentsCount()
@@ -74,6 +96,11 @@ class Post
         return $this->user;
     }
 
+    public function get_errors()
+    {
+        return $this->errors;
+    }
+
     public function findCommentsWithUser()
     {
         // ブログに関連するコメントの取得
@@ -83,6 +110,96 @@ class Post
         $this->findCommentUsers();
 
         return $this->comments;
+    }
+
+    public function validate()
+    {
+        $this->categoryValidate();
+        $this->titleValidate();
+        $this->bodyValidate();
+        $this->imageValidate();
+
+        return $this->errors ? false : true;
+    }
+
+    public function insert()
+    {
+        try {
+            // データベース接続
+            $dbh = connect_db();
+            $dbh->beginTransaction();
+
+            $this->insertMe($dbh);
+
+            if (!$this->fileUpload()) {
+                throw new Exception(MSG_UPLOAD_FAILED);
+            }
+
+            $dbh->commit();
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            $dbh->rollBack();
+            return false;
+        }
+    }
+
+    public function updateProperty($params)
+    {
+        $this->updateMyProperty($params);
+    }
+
+    public function update()
+    {
+        try {
+            // データベース接続
+            $dbh = connect_db();
+            $dbh->beginTransaction();
+
+            $this->updateMe($dbh);
+
+            if (!$this->fileUpload()) {
+                throw new Exception(MSG_UPLOAD_FAILED);
+            }
+
+            if ($this->image_old) {
+                if (!$this->fileDelete($this->image_old)) {
+                    throw new Exception(MSG_FILE_DELETE_FAILED);
+                }
+            }
+
+            $dbh->commit();
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            if ($this->image_old) {
+                $this->fileDelete($this->image);
+                $this->image = $this->image_old;
+            }
+
+            $dbh->rollBack();
+            return false;
+        }
+    }
+
+    public function delete()
+    {
+        try {
+            // データベース接続
+            $dbh = connect_db();
+            $dbh->beginTransaction();
+
+            $this->deleteMe($dbh);
+
+            $this->fileDelete($this->image);
+            $dbh->commit();
+
+            return true;
+        } catch (PDOException $e) {
+            error_log($e->getMessage());
+            $dbh->rollBack();
+            return false;
+        }
     }
 
     private function findUser()
@@ -130,6 +247,140 @@ class Post
         }
     }
 
+    private function categoryValidate()
+    {
+        if ($this->category_id == '') {
+            $this->errors['category_id'][] = MSG_CATEGORY_REQUIRED;
+        }
+    }
+
+    private function titleValidate()
+    {
+        if ($this->title == '') {
+            $this->errors['title'][] = MSG_TITLE_REQUIRED;
+        }
+
+        if (mb_strlen($this->title) > 255) {
+            $this->errors['title'][] = MSG_TITLE_MAX;
+        }
+    }
+
+    private function bodyValidate()
+    {
+        if ($this->body == '') {
+            $this->errors['body'][] = MSG_BODY_REQUIRED;
+        }
+    }
+
+    private function imageValidate()
+    {
+        if ($this->image_tmp["name"]) {
+            $ext = mb_strtolower(pathinfo($this->image_tmp["name"], PATHINFO_EXTENSION));
+            if (!in_array($ext, self::EXTENTION)) {
+                $this->errors['image'][] = MSG_IMAGE_FORMAT;
+            }
+        }
+    }
+
+    private function insertMe($dbh)
+    {
+        $sql = <<<EOM
+        INSERT INTO
+            posts (category_id, user_id, title, body, image)
+        VALUES
+            (:category_id, :user_id, :title, :body, :image)
+        EOM;
+
+        $stmt = $dbh->prepare($sql);
+        $stmt->bindParam(':category_id', $this->category_id, PDO::PARAM_INT);
+        $stmt->bindParam(':user_id', $this->user_id, PDO::PARAM_INT);
+        $stmt->bindParam(':title', $this->title, PDO::PARAM_STR);
+        $stmt->bindParam(':body', $this->body, PDO::PARAM_STR);
+        $stmt->bindParam(':image', $this->image, PDO::PARAM_STR);
+        $stmt->execute();
+
+        $this->id = $dbh->lastInsertId();
+    }
+
+    private function updateMe($dbh)
+    {
+        $sql = <<<EOM
+        UPDATE
+            posts
+        SET
+            category_id = :category_id,
+            title = :title,
+            body = :body,
+            image = :image
+        WHERE
+            id = :id
+        EOM;
+
+        $stmt = $dbh->prepare($sql);
+        $stmt->bindParam(':category_id', $this->category_id, PDO::PARAM_INT);
+        $stmt->bindParam(':title', $this->title, PDO::PARAM_STR);
+        $stmt->bindParam(':body', $this->body, PDO::PARAM_STR);
+        $stmt->bindParam(':image', $this->image, PDO::PARAM_STR);
+        $stmt->bindParam(':id', $this->id, PDO::PARAM_INT);
+        $stmt->execute();
+    }
+
+    private function deleteMe($dbh)
+    {
+        $sql = 'DELETE FROM posts WHERE id = :id';
+
+        $stmt = $dbh->prepare($sql);
+        $stmt->bindParam(':id', $this->id, PDO::PARAM_INT);
+        $stmt->execute();
+    }
+
+    private function fileUpload()
+    {
+        try {
+            if ($this->image_tmp['name']) {
+                move_uploaded_file(
+                    $this->image_tmp['tmp_name'],
+                    self::IMAGE_DIR_PATH . $this->image
+                );
+            }
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            return false;
+        }
+    }
+
+    private function updateMyProperty($params)
+    {
+        $this->category_id = $params['category_id'];
+        $this->title = $params['title'];
+        $this->body = $params['body'];
+
+        if ($params['image_tmp']['name']) {
+            $this->image_tmp = $params['image_tmp'];
+            $this->image_old = $this->image;
+            $this->image = date('YmdHis') . '_' . $params['image_tmp']['name'];
+        }
+    }
+
+    private function fileDelete($file)
+    {
+        if (empty($file)) {
+            return true;
+        }
+
+        try {
+            $file_path = self::IMAGE_DIR_PATH . $file;
+            if (file_exists($file_path)) {
+                unlink($file_path);
+            }
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            return false;
+        }
+    }
+
     public static function findWithUser($id)
     {
         // 自クラスのクラスメソッドを呼び出すためselfを付ける
@@ -145,17 +396,16 @@ class Post
 
     public static function findIndexView($category_id, $page)
     {
-        //一覧画面に表示するブログ情報取得
-        //return self::findPostIndexView($category_id, $page);
+        // 一覧画面に表示するブログ情報取得
         $posts = self::findPostIndexView($category_id, $page);
 
-        //ブログ情報からuser_idを配列で取得
+        // ブログ情報からuser_idを配列で取得
         $find_user_ids = self::getPostUserIds($posts);
 
-        //user_idの配列で使用してユーザー情報を連想配列として取得
+        // user_idの配列を使用してユーザー情報を連想配列として取得
         $users = User::findByIdsAsArray($find_user_ids);
 
-        //インスタンスのuserプロパティに､Userクラスのインスタンスをセット
+        // インスタンスのuserプロパティに、Userクラスのインスタンスをセット
         self::setPostUsers($posts, $users);
 
         return $posts;
@@ -164,6 +414,21 @@ class Post
     public static function findIndexViewCount($category_id)
     {
         return self::findPostIndexViewCount($category_id);
+    }
+
+    public static function setParams($input_params)
+    {
+        return self::setInputParams($input_params);
+    }
+
+    public static function find($id)
+    {
+        return self::findById($id);
+    }
+
+    public static function updatePostCommentsCountByIds($dbh, $ids)
+    {
+        return self::updateCommentCountByIds($dbh, $ids);
     }
 
     private static function findById($id)
@@ -198,9 +463,10 @@ class Post
     {
         $instances = [];
         try {
+            // データベース接続
             $dbh = connect_db();
 
-            //$sql = 'SELECT * FROM posts ORDER BY created_at desc';
+            // $sql = 'SELECT * FROM posts ORDER BY created_at desc';
             $sql = <<<EOM
             SELECT
                 p.*
@@ -212,20 +478,21 @@ class Post
                 p.category_id = c.id
             EOM;
 
-            //カテゴリー検索用
+            // カテゴリー検索用
             if ($category_id) {
-                $sql .= 'WHERE p.category_id = :category_id';
+                $sql .= ' WHERE p.category_id = :category_id';
             }
+
             $sql .= ' ORDER BY p.created_at desc';
             $sql .= ' LIMIT :par_page OFFSET :offset_count';
             $stmt = $dbh->prepare($sql);
 
-            //カテゴリー検索用
+            // カテゴリー検索用
             if ($category_id) {
                 $stmt->bindParam(':category_id', $category_id, PDO::PARAM_INT);
             }
 
-            //ページネーション用
+            // ページネーション用
             $par_page = self::PER_PAGE;
             $stmt->bindParam(':par_page', $par_page, PDO::PARAM_INT);
             $offset = ($page - 1) * self::PER_PAGE;
@@ -251,6 +518,7 @@ class Post
             },
             $posts
         );
+
         return array_values(array_unique($user_ids));
     }
 
@@ -267,35 +535,91 @@ class Post
     }
 
     private static function findPostIndexViewCount($category_id)
-{
-    $count = 0;
-    try {
-        $dbh = connect_db();
+    {
+        $count = 0;
+        try {
+            // データベース接続
+            $dbh = connect_db();
 
-        $sql = <<<EOM
-        SELECT
-            COUNT(*) AS count
-        FROM
-            posts p
-        INNER JOIN
-            categories c
-        ON
-            p.category_id = c.id
-        EOM;
-        if ($category_id) {
-            $sql .= ' WHERE p.category_id = :category_id';
+            $sql = <<<EOM
+            SELECT
+                COUNT(*) AS count
+            FROM
+                posts p
+            INNER JOIN
+                categories c
+            ON
+                p.category_id = c.id
+            EOM;
+            if ($category_id) {
+                $sql .= ' WHERE p.category_id = :category_id';
+            }
+
+            $stmt = $dbh->prepare($sql);
+            if ($category_id) {
+                $stmt->bindParam(':category_id', $category_id, PDO::PARAM_INT);
+            }
+            $stmt->execute();
+            $post = $stmt->fetch(PDO::FETCH_ASSOC);
+            $count = $post['count'];
+        } catch (PDOException $e) {
+            error_log($e->getMessage());
         }
+        return $count;
+    }
+
+    private static function setInputParams($input_params)
+    {
+        $params = [];
+        $params['category_id'] = $input_params['category_id'];
+        $params['user_id'] = $input_params['current_user']['id'];
+        $params['title'] = $input_params['title'];
+        $params['body'] = $input_params['body'];
+
+        if ($input_params['image_tmp']['name']) {
+            $params['image_tmp'] = $input_params['image_tmp'];
+            $params['image'] = date('YmdHis') . '_' . $input_params['image_tmp']['name'];
+        }
+        return $params;
+    }
+
+    private static function updateCommentCountByIds($dbh, $ids)
+    {
+        // コメントしたことが無い場合($idsが空)は処理を抜ける
+        if (empty($ids)) {
+            return;
+        }
+
+        // idsが配列ではない場合、配列に変換
+        if (!is_array($ids)) {
+            $ids = [$ids];
+        }
+
+        // 条件のIN句生成
+        $where_in = substr(str_repeat(',?', count($ids)), 1);
+
+        $sql = '';
+        $sql .= 'UPDATE ';
+        $sql .= '    posts AS p ';
+        $sql .= 'LEFT JOIN ';
+        $sql .= '   ( ';
+        $sql .= '    SELECT ';
+        $sql .= '        c.post_id, ';
+        $sql .= '        COUNT(c.id) AS cnt ';
+        $sql .= '    FROM ';
+        $sql .= '        comments c ';
+        $sql .= '    WHERE ';
+        $sql .= '        c.post_id IN (' . $where_in . ') ';
+        $sql .= '    GROUP BY c.post_id ';
+        $sql .= '   ) cm ';
+        $sql .= 'ON ';
+        $sql .= '    p.id = cm.post_id ';
+        $sql .= 'SET ';
+        $sql .= '    p.comments_count = COALESCE(cm.cnt, 0) ';
+        $sql .= 'WHERE ';
+        $sql .= '    p.id IN (' . $where_in . ')';
 
         $stmt = $dbh->prepare($sql);
-        if ($category_id) {
-            $stmt->bindParam(':category_id', $category_id, PDO::PARAM_INT);
-        }
-        $stmt->execute();
-        $post = $stmt->fetch(PDO::FETCH_ASSOC);
-        $count = $post['count'];
-    } catch (PDOException $e) {
-        error_log($e->getMessage());
+        $stmt->execute(array_merge($ids, $ids));
     }
-    return $count;
-}
 }

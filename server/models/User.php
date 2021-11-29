@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/../common/config.php';
 require_once __DIR__ . '/../common/functions.php';
+require_once __DIR__ . '/Comment.php';
+require_once __DIR__ . '/Post.php';
 
 class User
 {
@@ -13,10 +15,12 @@ class User
     private $email;
     private $password;
     private $confirm_password;
+    private $now_password;
     private $name;
     private $profile;
     private $avatar;
     private $avatar_tmp;
+    private $avatar_old;
     private $created_at;
     private $updated_at;
     private $errors = [];
@@ -27,13 +31,20 @@ class User
         $this->email = $params['email'];
         $this->password = $params['password'];
         $this->confirm_password = $params['confirm_password'];
+        $this->now_password = $params['now_password'];
         $this->name = $params['name'];
         $this->profile = $params['profile'];
         $this->avatar = $params['avatar'];
         $this->avatar_tmp = $params['avatar_tmp'];
+        $this->avatar_old = $params['avatar_old'];
         $this->created_at = $params['created_at'];
         $this->updated_at = $params['updated_at'];
     }
+
+    public function getId()
+    {
+        return $this->id;
+    } 
 
     public function getEmail()
     {
@@ -48,6 +59,11 @@ class User
     public function getProfile()
     {
         return $this->profile;
+    }
+
+    public function getAvatar()
+    {
+        return $this->avatar;
     }
 
     public function getAvatarPath()
@@ -68,6 +84,29 @@ class User
     {
         $this->emailValidate();
         $this->passwordValidate();
+        $this->nameValidate();
+        $this->profileValidate();
+        $this->avatarValidate();
+
+        return $this->errors ? false : true;
+    }
+
+    public function updateProperty($params)
+    {
+        $this->updateMyProperty($params);
+    }
+
+    public function updateValidate()
+    {
+        $this->emailValidate();
+        if (
+            $this->password ||
+            $this->confirm_password ||
+            $this->now_password
+        ) {
+            $this->passwordValidate();
+            $this->passwordMatchValidate();
+        }
         $this->nameValidate();
         $this->profileValidate();
         $this->avatarValidate();
@@ -101,6 +140,87 @@ class User
         }
     }
 
+    public function loginValidate()
+    {
+        return $this->loginRequiredValidate();
+    }
+
+    public function logIn()
+    {
+        return $this->logInMe();
+    }
+
+    public function update()
+    {
+        try {
+            // データベース接続
+            $dbh = connect_db();
+            $dbh->beginTransaction();
+
+            $this->updateMe($dbh);
+
+            session_regenerate_id(true);
+            $this->setCurrentUser();
+
+            if (!$this->fileUpload()) {
+                throw new Exception(MSG_UPLOAD_FAILED);
+            }
+
+            if (!$this->fileDelete($this->avatar_old)) {
+                throw new Exception(MSG_FILE_DELETE_FAILED);
+            }
+
+            $dbh->commit();
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+
+            if ($this->avatar_old) {
+                $this->fileDelete($this->avatar);
+                $this->avatar = $this->avatar_old;
+            }
+
+            $dbh->rollBack();
+            return false;
+        }
+    }
+
+    public function delete()
+    {
+        try {
+            // データベース接続
+            $dbh = connect_db();
+            $dbh->beginTransaction();
+
+            // 削除するユーザーがコメントしたブログのidを取得
+            $post_ids = Comment::findPostIdsByMyComments($this->id);
+
+            // 削除
+            $this->deleteMe($dbh);
+
+            // commnets_count更新
+            Post::updatePostCommentsCountByIds($dbh, $post_ids);
+
+            // アバター画像削除
+            $this->fileDelete($this->avatar);
+
+            $_SESSION = [];
+
+            if (isset($_COOKIE[session_name()])) {
+                setcookie(session_name(), '', time() - 86400);
+            }
+
+            session_regenerate_id(true);
+
+            $dbh->commit();
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            $dbh->rollBack();
+            return false;
+        }
+    }
+
     private function emailValidate()
     {
         if ($this->email == '') {
@@ -114,7 +234,8 @@ class User
                 $this->errors['email'][] = MSG_EMAIL_MAX;
             }
 
-            if (self::findByEmail($this->email)) {
+            $get_user = self::findByEmail($this->email);
+            if ($get_user && $get_user->id != $this->id) {
                 $this->errors['email'][] = MSG_EMAIL_USED;
             }
         }
@@ -145,6 +266,14 @@ class User
         }
     }
 
+    private function passwordMatchValidate()
+    {
+        $user = self::findByEmail($this->email);
+        if ($user && !password_verify($this->now_password, $user->password)) {
+            $this->errors['now_password'][] = MSG_PASSWORD_INCORRECT;
+        }
+    }
+
     private function nameValidate()
     {
         if ($this->name == '') {
@@ -155,6 +284,7 @@ class User
             }
         }
     }
+
     private function profileValidate()
     {
         if ($this->profile == '') {
@@ -194,6 +324,46 @@ class User
         $this->id = $dbh->lastInsertId();
     }
 
+    private function updateMe($dbh)
+    {
+        $sql = <<<EOM
+        UPDATE
+            users
+        SET
+            email = :email,
+            name = :name,
+            profile = :profile,
+            avatar = :avatar
+        EOM;
+
+        if ($this->password) {
+            $sql .= ',password = :password';
+        }
+        $sql .= ' WHERE id = :id';
+
+        $stmt = $dbh->prepare($sql);
+
+        $stmt->bindParam(':email', $this->email, PDO::PARAM_STR);
+        $stmt->bindParam(':name', $this->name, PDO::PARAM_STR);
+        $stmt->bindParam(':profile', $this->profile, PDO::PARAM_STR);
+        $stmt->bindParam(':avatar', $this->avatar, PDO::PARAM_STR);
+        if ($this->password) {
+            $this->password = password_hash($this->password, PASSWORD_DEFAULT);
+            $stmt->bindParam(':password', $this->password, PDO::PARAM_STR);
+        }
+        $stmt->bindParam(':id', $this->id, PDO::PARAM_INT);
+
+        $stmt->execute();
+    }
+
+    private function deleteMe($dbh)
+    {
+        $sql = 'DELETE FROM users WHERE id = :id'; 
+
+        $stmt = $dbh->prepare($sql);
+        $stmt->bindParam(':id', $this->id, PDO::PARAM_INT);
+        $stmt->execute();
+    }
     private function fileUpload()
     {
         try {
@@ -210,6 +380,24 @@ class User
         }
     }
 
+    private function fileDelete($file)
+    {
+        if (empty($file)) {
+            return true;
+        }
+
+        try {
+            $file_path = self::IMAGE_DIR_PATH . $file;
+            if (file_exists($file_path)) {
+                unlink($file_path);
+            }
+            return true;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            return false;
+        }
+    }
+
     private function setCurrentUser()
     {
         $_SESSION['current_user']['id'] = $this->id;
@@ -218,6 +406,49 @@ class User
             $_SESSION['current_user']['avatar'] = self::IMAGE_ROOT_PATH . self::NO_IMAGE;
         } else {
             $_SESSION['current_user']['avatar'] = self::IMAGE_ROOT_PATH . $this->avatar;
+        }
+    }
+
+    private function loginRequiredValidate()
+    {
+        if ($this->email == '') {
+            $this->errors['email'][] = MSG_EMAIL_REQUIRED;
+        }
+
+        if ($this->password == '') {
+            $this->errors['password'][] = MSG_PASSWORD_REQUIRED;
+        }
+
+        return $this->errors ? false : true;
+    }
+
+    private function logInMe()
+    {
+        $user = self::findByEmail($this->email);
+        if ($user && password_verify($this->password, $user->password)) {
+            session_regenerate_id(true);
+            $user->setCurrentUser();
+            return true;
+        } else {
+            $this->errors['email'][] = MSG_EMAIL_PASSWORD_NOT_MATCH;
+            $this->errors['password'][] = MSG_EMAIL_PASSWORD_NOT_MATCH;
+            return false;
+        }
+    }
+
+    private function updateMyProperty($params)
+    {
+        $this->email = $params['email'];
+        $this->password = $params['password'];
+        $this->confirm_password = $params['confirm_password'];
+        $this->now_password = $params['now_password'];
+        $this->name = $params['name'];
+        $this->profile = $params['profile'];
+
+        if ($params['avatar_tmp']['name']) {
+            $this->avatar_tmp = $params['avatar_tmp'];
+            $this->avatar_old = $this->avatar;
+            $this->avatar = date('YmdHis') . '_' . $params['avatar_tmp']['name'];
         }
     }
 
